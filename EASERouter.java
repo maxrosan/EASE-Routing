@@ -121,7 +121,8 @@ public class EASERouter extends ActiveRouter {
 	@Override 
 	public boolean createNewMessage(Message m) {
 		
-		m.addProperty("LastEncounterWithDestination", getT(m.getTo(), SimClock.getTime()));
+		m.addProperty("LastEncounterWithDestination", new Double(getT(m.getTo(), SimClock.getTime())));
+		m.addProperty("JumpingToAnArchorPoint", new Boolean(false));
 		
 		return super.createNewMessage(m);
 	}
@@ -135,10 +136,12 @@ public class EASERouter extends ActiveRouter {
 		double t = 0.;
 		boolean found = false;
 		Coord myPos = worldToSquareLattice(host.getLocation());
-		for (MapTuple tuple : mapHosts.get(host)) {
-			if (tuple.mLastEncounterTime > t && tuple.mLastEncounterTime <= tstart &&  mahDistance(myPos, tuple.mLastPosition) <= 1) {
-				t = tuple.mLastEncounterTime;
-				found = true;
+		if (mapHosts.containsKey(host)) {
+			for (MapTuple tuple : mapHosts.get(host)) {
+				if (tuple.mLastEncounterTime > t && tuple.mLastEncounterTime <= tstart &&  mahDistance(myPos, tuple.mLastPosition) <= 1) {
+					t = tuple.mLastEncounterTime;
+					found = true;
+				}
 			}
 		}
 		if (found)
@@ -146,20 +149,51 @@ public class EASERouter extends ActiveRouter {
 		return 0.;
 	}
 	
+	@Override
 	public Message messageTransferred(String id, DTNHost from) {
 		
-		Message m = super.messageTransferred(id, from);
+		// o código foi retirado de messageTransferred do MessageRouter. Contém algumas alterações
 		
-		// check if msg was for this host and a response was requested
-		if (m.getTo() == getHost() && m.getResponseSize() > 0) {
-			// generate a response message
-			Message res = new Message(this.getHost(),m.getFrom(), 
-					RESPONSE_PREFIX+m.getId(), m.getResponseSize());
-			this.createNewMessage(res);
-			this.getMessage(RESPONSE_PREFIX+m.getId()).setRequest(m);
+		Message incoming = removeFromIncomingBuffer(id, from);
+		boolean isFinalRecipient;
+		boolean isFirstDelivery; // is this first delivered instance of the msg
+		
+		if (incoming == null) {
+			throw new SimError("No message with ID " + id + " in the incoming "+
+					"buffer of " + this.getHost());
 		}
 		
-		return m;
+		// vizinho
+		Boolean jumpingToAnArchorPoint = (Boolean) incoming.getProperty("JumpingToAnArchorPoint");
+		if (jumpingToAnArchorPoint == null) {
+			throw new SimError("Property JumpingToAnArchorPoint not found");
+		}
+		if (!jumpingToAnArchorPoint.booleanValue()) {
+			if (incoming.getTo() != getHost()) {
+				double lastEncounterTime = (Double) incoming.getProperty("LastEncounterWithDestination");
+				if (getT(incoming.getTo(), SimClock.getTime()) <= (lastEncounterTime / 2.)) {
+					// .. 
+				}
+			}
+		}
+		
+		incoming.setReceiveTime(SimClock.getTime());
+		
+		isFinalRecipient = incoming.getTo() == getHost();
+		isFirstDelivery = isFinalRecipient&& !isDeliveredMessage(incoming);
+		
+		if (!isFinalRecipient) { // not the final recipient -> put to buffer
+			addToMessages(incoming, false);
+		}
+		else if (isFirstDelivery) {
+			deliveredMessages.put(id, incoming);
+		}
+		
+		for (MessageListener ml : this.mListeners) {
+			ml.messageTransferred(incoming, from, getHost(), isFirstDelivery);
+		}
+		
+		return incoming;
 	}
 
 }
