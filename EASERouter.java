@@ -1,57 +1,48 @@
+
+/* 
+ * Copyright 2008 TKK/ComNet
+ * Released under GPLv3. See LICENSE.txt for details. 
+ */
 package routing;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Random;
 
-import core.Connection;
-import core.Coord;
-import core.DTNHost;
-import core.Message;
-import core.Settings;
-import core.SimClock;
+import core.*;
 
 class MapTuple {
-	
-	double  mLastEncounterTime;
-	Coord   mLastPosition;
-	
+
+	double mLastEncounterTime;
+	Coord mLastPosition;
+
 	public MapTuple(Coord coord, double time) {
 		mLastPosition = new Coord(coord.getX(), coord.getY());
 		mLastEncounterTime = time;
 	}
-	
+
 }
 
+/**
+ * Superclass for message routers.
+ */
 public class EASERouter extends ActiveRouter {
 
-	public static final String NROF_COPIES = "nrofCopies";
-	public static final String BINARY_MODE = "binaryMode";
-	public static final String M_SIZE      = "Msize";
-
-	public static final String EASE_NS = "EASERouter";
+	/**
+	 * Constructor. Creates a new message router based on the settings in
+	 * the given Settings object.
+	 * @param s The settings object
+	 */
 	
-	/** Message property key */
-	public static final String MSG_COUNT_PROPERTY = EASE_NS + ".copies";
-	public static final String MSG_ARCHOR_PROPERTY = EASE_NS + ".archor";
-	
-	private int initialNrofCopies;
-	private boolean isBinary;
-	private int MSize;
-	
-	private SimClock clock;
-	
-	private HashMap<DTNHost, MapTuple> mapHosts;
+	private int MSize = 20;
+	private HashMap<DTNHost, ArrayList<MapTuple>> mapHosts = new HashMap<DTNHost, ArrayList<MapTuple>>();
 	
 	public EASERouter(Settings s) {
 		super(s);
-		Settings eSettings = new Settings(EASE_NS);
-		
-		initialNrofCopies = eSettings.getInt(NROF_COPIES);
-		isBinary          = eSettings.getBoolean( BINARY_MODE);
-		MSize             = eSettings.getInt(M_SIZE);
-		
-		clock = SimClock.getInstance();
 	}
 	
 	/**
@@ -60,136 +51,115 @@ public class EASERouter extends ActiveRouter {
 	 */
 	protected EASERouter(EASERouter r) {
 		super(r);
-		this.initialNrofCopies = r.initialNrofCopies;
-		this.isBinary = r.isBinary;
 	}
 	
 	@Override
-	public int receiveMessage(Message m, DTNHost from) {
-		return super.receiveMessage(m, from);
+	protected int checkReceiving(Message m) {
+		int recvCheck = super.checkReceiving(m); 
+		
+		if (recvCheck == RCV_OK) {
+			/* don't accept a message that has already traversed this node */
+			if (m.getHops().contains(getHost())) {
+				recvCheck = DENIED_OLD;
+			}
+		}
+		
+		return recvCheck;
+	}
+			
+	@Override
+	public void update() {
+		super.update();
+		if (isTransferring() || !canStartTransfer()) {
+			return; 
+		}
+		
+		if (exchangeDeliverableMessages() != null) {
+			return; 
+		}
+		
+		tryAllMessagesToAllConnections();
+	}
+	
+	@Override
+	protected void transferDone(Connection con) {
+		/* don't leave a copy for the sender */
+		this.deleteMessage(con.getMessage().getId(), false);
+	}
+
+	@Override
+	public MessageRouter replicate() {
+		// TODO Auto-generated method stub
+		return new EASERouter(this);
 	}
 	
 	private Coord worldToSquareLattice(Coord coord) {
-		
+
 		assert(MSize > 0);
-		
+
 		Coord c = new Coord(coord.getX() / MSize, coord.getY() / MSize);
 		return c;
 	}
-	// asdasd
+	
 	@Override
 	public void changedConnection(Connection con) {
 		DTNHost otherHost = con.getOtherNode(getHost());
 		if (con.isUp()) {
 			System.out.println(getHost() + ": Connected to " + otherHost);
-			MapTuple value = new MapTuple(worldToSquareLattice(otherHost.getLocation()), clock.getTime());
-			mapHosts.put(otherHost, value);
+			MapTuple value = new MapTuple(worldToSquareLattice(otherHost.getLocation()), SimClock.getTime());
+			if (!mapHosts.containsKey(otherHost)) {
+				mapHosts.put(otherHost, new ArrayList<MapTuple>());
+			}
+			if (mapHosts.get(otherHost).size() == 500) {
+				mapHosts.get(otherHost).remove(0);
+			}
+			mapHosts.get(otherHost).add(value);
 		}
 	}
 	
-	@Override
-	public Message messageTransferred(String id, DTNHost from) {
-		Message msg = super.messageTransferred(id, from);
-		Integer nrofCopies = (Integer)msg.getProperty(MSG_COUNT_PROPERTY);
-		
-		assert nrofCopies != null : "Not a SnW message: " + msg;
-		
-		if (isBinary) {
-			/* in binary S'n'W the receiving node gets ceil(n/2) copies */
-			nrofCopies = (int)Math.ceil(nrofCopies/2.0);
-		}
-		else {
-			/* in standard S'n'W the receiving node gets only single copy */
-			nrofCopies = 1;
-		}
-		
-		msg.updateProperty(MSG_COUNT_PROPERTY, nrofCopies);
-		return msg;
-	}
-	
+	// Chamado sempre quando o nó quer enviar uma nova mensagem para algum outro nó na rede
 	@Override 
-	public boolean createNewMessage(Message msg) {
-		makeRoomForNewMessage(msg.getSize());
-
-		msg.setTtl(this.msgTtl);
-		msg.addProperty(MSG_COUNT_PROPERTY, new Integer(initialNrofCopies));
-		addToMessages(msg, true);
-		return true;
+	public boolean createNewMessage(Message m) {
+		
+		m.addProperty("LastEncounterWithDestination", getT(m.getTo(), SimClock.getTime()));
+		
+		return super.createNewMessage(m);
 	}
 	
-	@Override
-	public void update() {
-		super.update();
-		if (!canStartTransfer() || isTransferring()) {
-			return; // nothing to transfer or is currently transferring 
-		}
-
-		/* try messages that could be delivered to final recipient */
-		if (exchangeDeliverableMessages() != null) {
-			return;
-		}
-		
-		/* create a list of SAWMessages that have copies left to distribute */
-		@SuppressWarnings(value = "unchecked")
-		List<Message> copiesLeft = sortByQueueMode(getMessagesWithCopiesLeft());
-		
-		if (copiesLeft.size() > 0) {
-			/* try to send those messages */
-			this.tryMessagesToConnections(copiesLeft, getConnections());
-		}
+	public double mahDistance(Coord p1, Coord p2) {
+		return (p1.getX()*p1.getX() + p2.getY()*p2.getY());
 	}
 	
-	/**
-	 * Creates and returns a list of messages this router is currently
-	 * carrying and still has copies left to distribute (nrof copies > 1).
-	 * @return A list of messages that have copies left
-	 */
-	private List<Message> getMessagesWithCopiesLeft() {
-		List<Message> list = new ArrayList<Message>();
-
-		for (Message m : getMessageCollection()) {
-			Integer nrofCopies = (Integer)m.getProperty(MSG_COUNT_PROPERTY);
-			assert nrofCopies != null : "SnW message " + m + " didn't have " + 
-				"nrof copies property!";
-			if (nrofCopies > 1) {
-				list.add(m);
+	// Pega o último instante menor que 'tstart' em que o nó foi vizinho de 'host'
+	public double getT(DTNHost host, double tstart) {
+		double t = 0.;
+		boolean found = false;
+		Coord myPos = worldToSquareLattice(host.getLocation());
+		for (MapTuple tuple : mapHosts.get(host)) {
+			if (tuple.mLastEncounterTime > t && tuple.mLastEncounterTime <= tstart &&  mahDistance(myPos, tuple.mLastPosition) <= 1) {
+				t = tuple.mLastEncounterTime;
+				found = true;
 			}
 		}
-		
-		return list;
+		if (found)
+			return (SimClock.getTime() - t);
+		return 0.;
 	}
 	
-	/**
-	 * Called just before a transfer is finalized (by 
-	 * {@link ActiveRouter#update()}).
-	 * Reduces the number of copies we have left for a message. 
-	 * In binary Spray and Wait, sending host is left with floor(n/2) copies,
-	 * but in standard mode, nrof copies left is reduced by one. 
-	 */
-	@Override
-	protected void transferDone(Connection con) {
-		Integer nrofCopies;
-		String msgId = con.getMessage().getId();
-		/* get this router's copy of the message */
-		Message msg = getMessage(msgId);
+	public Message messageTransferred(String id, DTNHost from) {
+		
+		Message m = super.messageTransferred(id, from);
+		
+		// check if msg was for this host and a response was requested
+		if (m.getTo() == getHost() && m.getResponseSize() > 0) {
+			// generate a response message
+			Message res = new Message(this.getHost(),m.getFrom(), 
+					RESPONSE_PREFIX+m.getId(), m.getResponseSize());
+			this.createNewMessage(res);
+			this.getMessage(RESPONSE_PREFIX+m.getId()).setRequest(m);
+		}
+		
+		return m;
+	}
 
-		if (msg == null) { // message has been dropped from the buffer after..
-			return; // ..start of transfer -> no need to reduce amount of copies
-		}
-		
-		/* reduce the amount of copies left */
-		nrofCopies = (Integer)msg.getProperty(MSG_COUNT_PROPERTY);
-		if (isBinary) { 
-			nrofCopies /= 2;
-		}
-		else {
-			nrofCopies--;
-		}
-		msg.updateProperty(MSG_COUNT_PROPERTY, nrofCopies);
-	}
-	
-	@Override
-	public EASERouter replicate() {
-		return new EASERouter(this);
-	}
 }
