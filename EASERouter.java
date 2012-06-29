@@ -39,7 +39,9 @@ public class EASERouter extends ActiveRouter {
 	 */
 	
 	private int MSize = 20;
-	private HashMap<DTNHost, ArrayList<MapTuple>> mapHosts = new HashMap<DTNHost, ArrayList<MapTuple>>();
+	private HashMap<DTNHost, MapTuple> mapHosts = new HashMap<DTNHost, MapTuple>();
+	private HashMap<DTNHost, HashMap<DTNHost, MapTuple> > mapOfOtherHosts = 
+			new HashMap<DTNHost, HashMap<DTNHost, MapTuple> >();
 	
 	public EASERouter(Settings s) {
 		super(s);
@@ -78,7 +80,90 @@ public class EASERouter extends ActiveRouter {
 			return; 
 		}
 		
-		tryAllMessagesToAllConnections();
+		List<Message> msgs = new ArrayList<Message>(getMessageCollection());
+		List<Connection> connections = getConnections();
+		if (connections.size() > 0 && getNrofMessages() > 0) {
+			sortByQueueMode(msgs);
+			for (Message m : msgs) {
+				Connection conChosen = null;
+				MapTuple lastEncounterWithDest = new MapTuple(new Coord(0,0), 0.);
+				Boolean jumpingToArchor = (Boolean) m.getProperty("JumpingToAnArchorPoint");
+				lastEncounterWithDest.mLastEncounterTime = 0;
+				double distanceToDestination = Double.MAX_VALUE, lastTime = 0.;
+				
+				if (mapHosts.containsKey(m.getTo())) {
+					lastEncounterWithDest = (MapTuple) mapHosts.get(m.getTo());
+				}
+				for (Connection con : connections) {
+					if (m.getProperty("MyTable") != null) {
+						if (startTransfer(m, con) == RCV_OK) {
+							System.out.println("Enviou tabela");
+						}
+						break;
+					}
+					if (con.isUp() && jumpingToArchor != null) {
+						DTNHost host = con.getOtherNode(getHost());
+						HashMap<DTNHost, MapTuple> mapOther = 
+								(HashMap<DTNHost, MapTuple>) mapOfOtherHosts.get(host);
+						if (!jumpingToArchor.booleanValue()) {
+							if (mapOther != null && mapOther.containsKey(m.getTo())) {
+								MapTuple tuple = mapOther.get(m.getTo());
+								if ((SimClock.getTime() - tuple.mLastEncounterTime) < 2.*((SimClock.getTime() - lastEncounterWithDest.mLastEncounterTime))) {
+									if (lastTime < tuple.mLastEncounterTime) {
+										conChosen = con;
+										System.out.println(getHost() + " : Enviar para " + m.getTo() + " por " + host);
+										System.out.println(SimClock.getTime() + " <> " + lastTime);
+										lastTime = tuple.mLastEncounterTime;
+									}
+								}
+							}
+						} else {
+							if (mapOther != null) {
+								MapTuple tuple = mapOther.get(m.getTo());
+								if (tuple != null) {
+									double d = mahDistance(worldToSquareLattice(getHost().getLocation()), tuple.mLastPosition);
+									if (distanceToDestination > d) {
+										distanceToDestination = d;
+										conChosen = con;
+									}
+								}
+							}
+						}
+					}
+					
+				}
+				
+				if (jumpingToArchor != null) {
+					// se não achar algum vizinho que conheça o destino, busque o vizinho mais próximo
+					if (conChosen == null) {
+						double dist = Double.MAX_VALUE;
+						for (Connection con : connections) {
+							if (conChosen == null) {
+								conChosen = con;
+							} else {
+								MapTuple tuple = (MapTuple) mapHosts.get(getHost());
+								if (tuple != null) {
+									double d = mahDistance(worldToSquareLattice(getHost().getLocation()), tuple.mLastPosition);
+									if (dist > d) {
+										conChosen = con;
+										dist = d;
+									}
+								}
+							}
+						}
+					}
+					if (conChosen != null) {
+						int retVal = startTransfer(m, conChosen);
+						if (retVal == RCV_OK) {
+							System.out.println("####### " + getHost() + " : enviada " + m.getId() + " para " + conChosen.getOtherNode(getHost()));
+						}
+					}
+				}
+				
+			}
+		}
+		
+		//tryAllMessagesToAllConnections();
 	}
 	
 	@Override
@@ -105,15 +190,17 @@ public class EASERouter extends ActiveRouter {
 	public void changedConnection(Connection con) {
 		DTNHost otherHost = con.getOtherNode(getHost());
 		if (con.isUp()) {
-			System.out.println(getHost() + ": Connected to " + otherHost);
+			//System.out.println(getHost() + ": Connected to " + otherHost);
 			MapTuple value = new MapTuple(worldToSquareLattice(otherHost.getLocation()), SimClock.getTime());
-			if (!mapHosts.containsKey(otherHost)) {
-				mapHosts.put(otherHost, new ArrayList<MapTuple>());
-			}
-			if (mapHosts.get(otherHost).size() == 500) {
-				mapHosts.get(otherHost).remove(0);
-			}
-			mapHosts.get(otherHost).add(value);
+			mapHosts.put(otherHost, value);
+			
+			Message m = new Message(getHost(), otherHost, 
+					"broadcast" + getHost() + otherHost + SimClock.getIntTime(), 1);
+			
+			m.addProperty("MyTable", mapHosts);
+			
+			super.createNewMessage(m);
+			
 		}
 	}
 	
@@ -121,7 +208,6 @@ public class EASERouter extends ActiveRouter {
 	@Override 
 	public boolean createNewMessage(Message m) {
 		
-		m.addProperty("LastEncounterWithDestination", new Double(getT(m.getTo(), SimClock.getTime())));
 		m.addProperty("JumpingToAnArchorPoint", new Boolean(false));
 		
 		return super.createNewMessage(m);
@@ -129,24 +215,6 @@ public class EASERouter extends ActiveRouter {
 	
 	public double mahDistance(Coord p1, Coord p2) {
 		return (p1.getX()*p1.getX() + p2.getY()*p2.getY());
-	}
-	
-	// Pega o último instante menor que 'tstart' em que o nó foi vizinho de 'host'
-	public double getT(DTNHost host, double tstart) {
-		double t = 0.;
-		boolean found = false;
-		Coord myPos = worldToSquareLattice(host.getLocation());
-		if (mapHosts.containsKey(host)) {
-			for (MapTuple tuple : mapHosts.get(host)) {
-				if (tuple.mLastEncounterTime > t && tuple.mLastEncounterTime <= tstart &&  mahDistance(myPos, tuple.mLastPosition) <= 1) {
-					t = tuple.mLastEncounterTime;
-					found = true;
-				}
-			}
-		}
-		if (found)
-			return (SimClock.getTime() - t);
-		return 0.;
 	}
 	
 	@Override
@@ -163,18 +231,27 @@ public class EASERouter extends ActiveRouter {
 					"buffer of " + this.getHost());
 		}
 		
-		// vizinho
-		Boolean jumpingToAnArchorPoint = (Boolean) incoming.getProperty("JumpingToAnArchorPoint");
-		if (jumpingToAnArchorPoint == null) {
-			throw new SimError("Property JumpingToAnArchorPoint not found");
-		}
-		if (!jumpingToAnArchorPoint.booleanValue()) {
-			if (incoming.getTo() != getHost()) {
-				double lastEncounterTime = (Double) incoming.getProperty("LastEncounterWithDestination");
-				if (getT(incoming.getTo(), SimClock.getTime()) <= (lastEncounterTime / 2.)) {
-					// .. 
+		HashMap<DTNHost, MapTuple> mapOtherHost = (HashMap<DTNHost, MapTuple>) incoming.getProperty("MyTable"); 
+		if (mapOtherHost != null) {
+			if (incoming.getTo() == getHost() && incoming.getFrom() == from) { // verifica se foi o vizinho que mandou
+				mapOfOtherHosts.put(from, mapOtherHost);
+				//System.out.println("Recebi tabela");
+			}
+		} else {
+
+			Boolean jumpingToArchor = (Boolean) incoming.getProperty("JumpingToAnArchorPoint");
+			if (jumpingToArchor != null) {
+				MapTuple tuple = mapHosts.get(incoming.getTo());
+				if (tuple != null && mahDistance(worldToSquareLattice(getHost().getLocation()), tuple.mLastPosition) > 1.) {
+					incoming.updateProperty("JumpingToAnArchorPoint", new Boolean(true));
+				} else {
+					incoming.updateProperty("JumpingToAnArchorPoint", new Boolean(false));
 				}
 			}
+			// vizinho
+			
+			//incoming.updateProperty(", value)
+			
 		}
 		
 		incoming.setReceiveTime(SimClock.getTime());
