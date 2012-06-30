@@ -38,7 +38,7 @@ public class EASERouter extends ActiveRouter {
 	 * @param s The settings object
 	 */
 	
-	private int MSize = 10;
+	private int MSize = 15;
 	private HashMap<DTNHost, MapTuple> mapHosts = new HashMap<DTNHost, MapTuple>();
 	private HashMap<DTNHost, HashMap<DTNHost, MapTuple> > mapOfOtherHosts = 
 			new HashMap<DTNHost, HashMap<DTNHost, MapTuple> >();
@@ -124,7 +124,7 @@ public class EASERouter extends ActiveRouter {
 									if (lastTime < tuple.mLastEncounterTime) {
 										conChosen = con;
 										System.out.println(getHost() + " : Enviar para " + m.getTo() + " por " + host);
-										System.out.println(SimClock.getTime() + " <> " + lastTime);
+										System.out.println(SimClock.getTime() + " <> " + tuple.mLastEncounterTime + "<>" + lastEncounterWithDest.mLastEncounterTime);
 										lastTime = tuple.mLastEncounterTime;
 									}
 								}
@@ -164,14 +164,7 @@ public class EASERouter extends ActiveRouter {
 						}
 					}
 					if (conChosen != null) {
-						int retVal = startTransfer(m, conChosen);
-						if (retVal == RCV_OK) {
-							/*System.out.print("####### " + getHost() + " : enviada " + m.getId() + " para " + conChosen.getOtherNode(getHost()));
-							for (DTNHost h : m.getHops()) {
-								System.out.print(" ; " + h);
-							}
-							System.out.println("; &&& " + m.getFrom() + "=> " + m.getTo());*/
-						}
+						startTransfer(m, conChosen);
 					}
 				}
 				
