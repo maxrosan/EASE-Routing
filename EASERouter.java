@@ -12,7 +12,6 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Random;
-import java.util.TreeSet;
 
 import core.*;
 
@@ -39,11 +38,10 @@ public class EASERouter extends ActiveRouter {
 	 * @param s The settings object
 	 */
 	
-	private int MSize = 20;
+	private int MSize = 10;
 	private HashMap<DTNHost, MapTuple> mapHosts = new HashMap<DTNHost, MapTuple>();
 	private HashMap<DTNHost, HashMap<DTNHost, MapTuple> > mapOfOtherHosts = 
 			new HashMap<DTNHost, HashMap<DTNHost, MapTuple> >();
-	private TreeSet<String> msgsProcessed = new TreeSet<String>();
 	
 	public EASERouter(Settings s) {
 		super(s);
@@ -85,7 +83,7 @@ public class EASERouter extends ActiveRouter {
 		for (Connection con : getConnections()) {
 			DTNHost host = con.getOtherNode(getHost());
 			MapTuple tuple = mapHosts.get(host);
-			if (tuple == null || (SimClock.getTime() - tuple.mLastEncounterTime) > 60.) {
+			if ((tuple == null || (SimClock.getTime() - tuple.mLastEncounterTime) > 60.) && con.isUp()) {
 				updateTableAndSend(host);
 			}
 		}
@@ -204,15 +202,18 @@ public class EASERouter extends ActiveRouter {
 	}
 
 	private void updateTableAndSend(DTNHost otherHost) {
-		MapTuple value = new MapTuple(worldToSquareLattice(otherHost.getLocation()), SimClock.getTime());
-		mapHosts.put(otherHost, value);
-		
-		Message m = new Message(getHost(), otherHost, 
-				"broadcast" + getHost() + otherHost + SimClock.getIntTime(), 1);
-		
-		m.addProperty("MyTable", mapHosts);
-		
-		super.createNewMessage(m);		
+		double dist = mahDistance(worldToSquareLattice(otherHost.getLocation()), worldToSquareLattice(getHost().getLocation()));
+		if (dist <= 1.) { // envia somente para os vizinhos próximos
+			MapTuple value = new MapTuple(worldToSquareLattice(otherHost.getLocation()), SimClock.getTime());
+			mapHosts.put(otherHost, value);
+
+			Message m = new Message(getHost(), otherHost, 
+					"broadcast" + getHost() + otherHost + SimClock.getIntTime(), 1);
+
+			m.addProperty("MyTable", mapHosts);
+
+			super.createNewMessage(m);
+		}
 	}
 	
 	@Override
@@ -233,7 +234,9 @@ public class EASERouter extends ActiveRouter {
 	}
 	
 	public double mahDistance(Coord p1, Coord p2) {
-		return (p1.getX()*p1.getX() + p2.getY()*p2.getY());
+		double dx = p2.getX() - p1.getX();
+		double dy = p2.getY() - p1.getY();
+		return (dx*dx + dy*dy);
 	}
 	
 	@Override
